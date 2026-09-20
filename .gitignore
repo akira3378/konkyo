@@ -1,0 +1,32 @@
+# --- 指令・计划・个人记录：绝不进远端 ---
+# AGENTS.md 必须在仓库根部才会被自动加载，所以单独 ignore 文件本身
+/AGENTS.md
+/_plan/
+
+# --- 密钥 ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# --- 语料与评测产物 ---
+/data/
+/eval/results/
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# --- node ---
+node_modules/
+.next/
+
+# --- macOS ---
+.DS_Store

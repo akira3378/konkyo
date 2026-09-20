@@ -1,0 +1,58 @@
+#!/bin/sh
+# シークレット混入を止める最後の防御。
+# 有効化: git config core.hooksPath .githooks
+# 最初の防御は「そもそも書かない」こと。これは保険でしかない。
+
+fail=0
+files=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$files" ] && exit 0
+
+# 1) .env 系そのもののコミットを止める (.env.example は許可)
+for f in $files; do
+  case "$f" in
+    .env|.env.*)
+      [ "$f" = ".env.example" ] && continue
+      echo "BLOCKED: $f はコミットできません (.env はローカル専用)"
+      fail=1
+      ;;
+    *.pem|*.key|credentials.json)
+      echo "BLOCKED: $f は鍵ファイルの可能性があります"
+      fail=1
+      ;;
+  esac
+done
+
+# 2) よくある API キーの形を検出 (.env.example と本フック自身は除外)
+patterns='sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[0-9A-Za-z-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+for f in $files; do
+  case "$f" in
+    .env.example|.githooks/*) continue ;;
+  esac
+  [ -f "$f" ] || continue
+  if git show ":$f" 2>/dev/null | grep -nEq "$patterns"; then
+    echo "BLOCKED: $f にシークレットらしき文字列があります"
+    git show ":$f" | grep -nE "$patterns" | head -3 | sed 's/^/    /'
+    fail=1
+  fi
+done
+
+# 3) KEY/TOKEN/SECRET への実値代入を検出 (空・プレースホルダは許可)
+for f in $files; do
+  case "$f" in
+    .env.example|.githooks/*|docs/*|*.md) continue ;;
+  esac
+  [ -f "$f" ] || continue
+  if git show ":$f" 2>/dev/null | grep -nEq '(API_KEY|SECRET|TOKEN|PASSWORD)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_/+-]{16,}'; then
+    echo "WARNING: $f でキーらしき値を直接代入しています。環境変数から読んでください"
+    git show ":$f" | grep -nE '(API_KEY|SECRET|TOKEN|PASSWORD)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_/+-]{16,}' | head -3 | sed 's/^/    /'
+    fail=1
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "コミットを中止しました。"
+  echo "意図的に通す場合のみ: git commit --no-verify （本当に安全か確認してから）"
+  exit 1
+fi
+exit 0

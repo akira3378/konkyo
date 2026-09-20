@@ -1,0 +1,25 @@
+[project]
+name = "konkyo"
+version = "0.1.0"
+description = "带出典回答的公文 Agent"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.60",        # OpenAI 兼容 SDK。DeepSeek 等也走这个接口
+    "python-dotenv>=1.0",  # 从 .env 读环境变量
+]
+
+[dependency-groups]
+dev = ["ruff>=0.9"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/konkyo"]
