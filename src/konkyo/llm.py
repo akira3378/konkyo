@@ -9,93 +9,40 @@ S1 的核心认知：
 """
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from openai import APIError, APITimeoutError, OpenAI
 
 from konkyo.config import LLMConfig
 
-# deepseek-flash 官方 API 的价格（美元 / 100 万 token，繁忙时段。off-peak 是一半）
-# 来源：https://api-docs.deepseek.com/quick_start/pricing
-# 现在用的是火山方舟转发（见下面 ARK_PRICE），但这张表故意不删——
-# 003 号判断：之后可能切回 DeepSeek 官方 API，到时候不用重查一遍价格。
-DEEPSEEK_PRICE_PER_MTOK = {
-    "currency": "USD",
-    "input_cache_hit": 0.006,
-    "input_cache_miss": 0.30,
-    "output": 1.20,
-}
-
-# 火山方舟（Volcengine Ark）deepseek-v4-1-flash 的价格（元 / 100 万 token）。
-# 来源：https://www.volcengine.com/docs/82379/1099320 （2026-09-20 查）
-# 分高峰/空闲两档，峰值定义：北京时间周一至周五 09:00–12:00、14:00–18:00。
-ARK_PRICE_PER_MTOK = {
-    "currency": "CNY",
-    "peak": {"input_cache_hit": 0.04, "input_cache_miss": 2.00, "output": 8.00},
-    "offpeak": {"input_cache_hit": 0.02, "input_cache_miss": 1.00, "output": 4.00},
-}
-
-_ARK_TZ = ZoneInfo("Asia/Shanghai")
-
-
-def _is_ark(base_url: str) -> bool:
-    return "volces.com" in base_url
-
-
-def _is_ark_peak_hour(at: datetime | None = None) -> bool:
-    """判断给定时间是否落在火山方舟的高峰时段（北京时间）。"""
-    now = (at or datetime.now(_ARK_TZ)).astimezone(_ARK_TZ)
-    if now.weekday() >= 5:  # 周六=5, 周日=6
-        return False
-    return (9 <= now.hour < 12) or (14 <= now.hour < 18)
-
-
-def _rates_for(base_url: str) -> tuple[dict, str]:
-    """按 base_url 选价目表。返回 (单价表, 货币)。
-
-    这里用 base_url 里的域名分辨 provider，不是完美方案（换个转发域名就认不出来），
-    但对现在"只有两家、手动配置"的规模够用了。要更严谨可以在 LLMConfig 里显式加
-    一个 provider 字段，等真的需要再加，S1 不提前做这个抽象。
-    """
-    if _is_ark(base_url):
-        rates = ARK_PRICE_PER_MTOK["peak"] if _is_ark_peak_hour() else ARK_PRICE_PER_MTOK["offpeak"]
-        return rates, ARK_PRICE_PER_MTOK["currency"]
-    return DEEPSEEK_PRICE_PER_MTOK, DEEPSEEK_PRICE_PER_MTOK["currency"]
-
-
-_CURRENCY_SYMBOL = {"USD": "$", "CNY": "¥"}
-
 
 @dataclass
 class Usage:
-    """一次调用花了多少。
+    """一次调用用了多少 token。
 
     为什么 S1 就要算这个：
     "怎么控制 LLM 成本" 是面试必问题。只会答"截断历史"是入门线。
-    要能答：多轮对话的 messages 前缀是重复的，命中前缀缓存时
-    输入价格差几十倍，所以要把 system prompt 和工具定义放最前面、保持前缀稳定。
+    要能答：多轮对话的 messages 前缀是重复的，命中前缀缓存时能省下这部分——
+    所以要把 system prompt 和工具定义放最前面、保持前缀稳定。
 
-    cost / currency 在构造时算好存进来（而不是做成 property 现算），
-    因为价目表要按 provider（base_url）选，Usage 自己不知道是谁发的请求——
-    算价格这一步放在 llm.py 里知道 base_url 的地方做。
+    这里故意只记 token 数，不算成本（金额）：
+    价目表是会过时的外部数字（不同 provider、峰谷时段、汇率都不一样），
+    自己维护一份很容易讲错、讲的时候还要先解释一堆计费规则。
+    token 数是 API 直接返回的原始事实，没有这些争议，复盘时也最好讲清楚。
+    要看这次实际花了多少钱，去 provider 控制台的账单页对着 token 数查，
+    不在代码里编一份可能过时的价目表。
     """
 
     input_tokens: int
     output_tokens: int
     cache_hit_tokens: int  # 命中前缀缓存的 input token
     cache_miss_tokens: int
-    cost: float = 0.0
-    currency: str = "USD"
 
     def __str__(self) -> str:
         hit_rate = self.cache_hit_tokens / self.input_tokens * 100 if self.input_tokens else 0
-        symbol = _CURRENCY_SYMBOL.get(self.currency, self.currency + " ")
         return (
             f"in={self.input_tokens} (缓存命中 {self.cache_hit_tokens}, {hit_rate:.0f}%) "
-            f"out={self.output_tokens} "
-            f"cost≈{symbol}{self.cost:.6f}"
+            f"out={self.output_tokens}"
         )
 
 
@@ -121,17 +68,15 @@ class LLM:
         """
         # deepseek-v4.1-flash 默认会先生成一段隐藏思维链再回答，这段思考本身
         # 按输出 token 计费，之前实测占了 out 的九成以上——S1 只是简单问答，
-        # 不需要这个。这个字段是 Ark 的扩展（OpenAI SDK 不认识，走 extra_body），
-        # 不确定 DeepSeek 官方接口是否认同一个字段名，所以只在走 Ark 时才加，
-        # 换回 DeepSeek 官方时这行自动不生效，不会因为字段不认识报错。
-        extra_body = {"thinking": {"type": "disabled"}} if _is_ark(self.config.base_url) else None
-
+        # 不需要这个。这个字段 OpenAI SDK 不认识，走 extra_body 原样透传。
+        # 没按 provider 分支：目前只在 Ark 上验证过能用，还没拿 DeepSeek 官方
+        # 试过会不会报错——真遇到报错再按 provider 区分，不提前猜。
         try:
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,  # type: ignore[arg-type]
                 temperature=temperature,
-                extra_body=extra_body,
+                extra_body={"thinking": {"type": "disabled"}},
             )
         except APITimeoutError as e:
             raise RuntimeError("请求超时。网络问题，或者 context 太长。") from e
@@ -141,50 +86,32 @@ class LLM:
 
         return Reply(
             text=response.choices[0].message.content or "",
-            usage=_parse_usage(response.usage, self.config.base_url),
+            usage=_parse_usage(response.usage),
         )
 
 
-def _parse_usage(raw: Any, base_url: str) -> Usage:
-    """从响应里取用量，并按 base_url 对应的 provider 算价格。
+def _parse_usage(raw: Any) -> Usage:
+    """从响应里取用量。
 
-    缓存命中数字的字段名两家不一样，不是同一套扩展字段：
-    - DeepSeek 官方 API：扁平字段 prompt_cache_hit_tokens / prompt_cache_miss_tokens
-    - Ark（标准 OpenAI usage 结构）：嵌套在 prompt_tokens_details.cached_tokens 里，
-      而且只给命中数，没有"未命中数"字段，未命中 = 总数 - 命中，要自己算
-    两种都试，都取不到就退化成"全部未命中"——这样再换一家 provider 也不会崩，
-    只是成本算得保守一点。这就是"provider 可替换"在代码里的具体样子。
+    按实测过的 Ark 格式解析：缓存命中数在 prompt_tokens_details.cached_tokens 里，
+    只给命中数，没有"未命中数"字段，未命中 = 总数 - 命中。
+    没有 DeepSeek 官方接口的兼容代码——没拿真实 key 测过它的字段格式，
+    不该照着文档猜一份没验证过的解析逻辑。真的换过去用了再看实际返回改。
     """
-    rates, currency = _rates_for(base_url)
     if raw is None:
-        return Usage(0, 0, 0, 0, 0.0, currency)
+        return Usage(0, 0, 0, 0)
 
     input_tokens = getattr(raw, "prompt_tokens", 0) or 0
     output_tokens = getattr(raw, "completion_tokens", 0) or 0
 
-    hit = getattr(raw, "prompt_cache_hit_tokens", None)
-    miss = getattr(raw, "prompt_cache_miss_tokens", None)
-
-    if hit is None:
-        details = getattr(raw, "prompt_tokens_details", None)
-        cached = getattr(details, "cached_tokens", None) if details else None
-        if cached is not None:
-            hit, miss = cached, input_tokens - cached
-
-    if hit is None or miss is None:
-        hit, miss = 0, input_tokens
-
-    cost = (
-        hit * rates["input_cache_hit"]
-        + miss * rates["input_cache_miss"]
-        + output_tokens * rates["output"]
-    ) / 1_000_000
+    details = getattr(raw, "prompt_tokens_details", None)
+    hit = getattr(details, "cached_tokens", None) if details else None
+    hit = hit or 0
+    miss = input_tokens - hit
 
     return Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_hit_tokens=hit,
         cache_miss_tokens=miss,
-        cost=cost,
-        currency=currency,
     )
