@@ -8,10 +8,11 @@ S1 的核心认知：
     执行的永远是你的代码。（这条到 S4 讲 Tool Calling 时会变得非常重要）
 """
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from openai import APIError, APITimeoutError, OpenAI
+from openai import APIError, APITimeoutError, AsyncOpenAI, OpenAI
 
 from konkyo.config import LLMConfig
 
@@ -52,11 +53,30 @@ class Reply:
     usage: Usage
 
 
+@dataclass
+class StreamChunk:
+    """流式返回的一个片段。
+
+    只有两种：正文片段（delta 非空）、或者流结束时的用量汇总（usage 非空）。
+    分成两种类型而不是一路只 yield 字符串，是因为 usage 只在流的最后一条
+    chunk 里出现一次——用同一个类型带上"这条是文字还是用量"的信息，
+    调用方（server.py）不用另外猜测最后一条和前面的有什么不同。
+    """
+
+    delta: str = ""
+    usage: Usage | None = None
+
+
 class LLM:
     def __init__(self, config: LLMConfig | None = None) -> None:
         self.config = config or LLMConfig.primary()
         # OpenAI SDK 只是 HTTP 请求的封装。base_url 一换就指向别家。
         self.client = OpenAI(base_url=self.config.base_url, api_key=self.config.api_key, timeout=60)
+        # 流式必须用异步客户端：同步客户端的迭代器会阻塞整个事件循环，
+        # FastAPI 服务这一个请求的时候，其他请求全部卡住。
+        self.async_client = AsyncOpenAI(
+            base_url=self.config.base_url, api_key=self.config.api_key, timeout=60
+        )
 
     def chat(self, messages: list[dict[str, str]], temperature: float = 0.3) -> Reply:
         """发一轮对话，拿回一个回复。
@@ -88,6 +108,51 @@ class LLM:
             text=response.choices[0].message.content or "",
             usage=_parse_usage(response.usage),
         )
+
+    async def chat_stream(
+        self, messages: list[dict[str, str]], temperature: float = 0.3
+    ) -> AsyncIterator[StreamChunk]:
+        """和 chat() 发的是同一个请求，唯一区别是 stream=True。
+
+        区别不在"发什么"，在"怎么收"：
+        chat() 等 SDK 把完整响应体收完，包成一个 Reply 才返回。
+        这里 SDK 把 HTTP 响应体按 DeepSeek 推来的 SSE 分片，一条条转成
+        chunk 对象——每条到了就立刻从这个 async generator yield 出去，
+        不等后面的分片。调用方（server.py）每 yield 一次就能立刻转发给浏览器。
+        """
+        try:
+            stream = await self.async_client.chat.completions.create(
+                model=self.config.model,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=temperature,
+                extra_body={"thinking": {"type": "disabled"}},
+                stream=True,
+                # 不加这个，流式响应完全不带 usage——只有非流式请求默认带。
+                stream_options={"include_usage": True},
+            )
+        except APITimeoutError as e:
+            raise RuntimeError("请求超时。网络问题，或者 context 太长。") from e
+        except APIError as e:
+            raise RuntimeError(f"API 调用失败：{e}") from e
+
+        try:
+            async for chunk in stream:
+                # 最后一条 chunk：choices 是空列表，usage 是这次调用的汇总。
+                # （标准 OpenAI 流式协议就是这样分两种 chunk，不是这家 provider 特有的）
+                if chunk.usage is not None:
+                    # 这家 provider 会把同一份 usage 在结尾重复发一次
+                    # （不同 provider 的实现细节，不是协议要求），收到就
+                    # 立刻结束，不然 usage 会被转发两次。
+                    yield StreamChunk(usage=_parse_usage(chunk.usage))
+                    return
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield StreamChunk(delta=delta)
+        except APIError as e:
+            # 流已经开始才出错——前面吐出去的文字保留，只是没法继续了。
+            raise RuntimeError(f"流式读取中断：{e}") from e
 
 
 def _parse_usage(raw: Any) -> Usage:

@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-lc",
+        "cd /Users/akira/Documents/Projects/konkyo/web && exec npm run dev"
+      ],
+      "port": 3000
+    }
+  ]
+}

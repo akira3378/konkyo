@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-21 · S2：流式聊天（第一版）
+
+**Sonnet5 独立完成：**
+- 后端：`LLM.chat_stream()` 异步生成器 + FastAPI `/api/chat` SSE 端点，客户端断开时经 `request.is_disconnected()` 停止继续向上游取流
+- 前端：Next.js + TypeScript + Tailwind，`web/src/lib/chat.ts` 手写 `fetch()` + `ReadableStream` 解析 SSE（未用 `EventSource`/Vercel AI SDK），`AbortController` 实现停止
+- 首 token 延迟在服务端打点（终端日志），前端界面同步展示
+
 ## 2026-09-20 · S1：终端 LLM 调用链路
 
 **Sonnet5 medium独立完成：**
