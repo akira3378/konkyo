@@ -49,9 +49,9 @@ for f in $files; do
   fi
 done
 
-# 4) web/ に変更があるときだけ ESLint + 型チェック
+# 4) web/ に変更があるときだけ ESLint + 型チェック + フロントのテスト
 if echo "$files" | grep -q '^web/'; then
-  echo "web/ に変更あり: eslint / tsc を実行..."
+  echo "web/ に変更あり: eslint / tsc / vitest を実行..."
   if ! (cd web && npx eslint src); then
     echo "BLOCKED: eslint がエラーを検出しました"
     fail=1
@@ -60,13 +60,21 @@ if echo "$files" | grep -q '^web/'; then
     echo "BLOCKED: tsc の型チェックに失敗しました"
     fail=1
   fi
+  if ! (cd web && npm run test); then
+    echo "BLOCKED: vitest が失敗しました"
+    fail=1
+  fi
 fi
 
-# 5) src/ (バックエンド) に変更があるときだけ ruff
-if echo "$files" | grep -q '^src/'; then
-  echo "src/ に変更あり: ruff を実行..."
-  if ! uv run ruff check src/konkyo/; then
+# 5) src/ か tests/ (バックエンド) に変更があるときだけ ruff + pytest
+if echo "$files" | grep -qE '^(src|tests)/'; then
+  echo "src/ または tests/ に変更あり: ruff / pytest を実行..."
+  if ! uv run ruff check src/konkyo/ tests/; then
     echo "BLOCKED: ruff check がエラーを検出しました"
+    fail=1
+  fi
+  if ! uv run pytest; then
+    echo "BLOCKED: pytest が失敗しました"
     fail=1
   fi
 fi

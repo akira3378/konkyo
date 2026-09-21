@@ -12,6 +12,8 @@
 **在用户引导下完成：**
 - 界面加了中/日/英三语切换，同时通过eslint-plugin-i18next检测被遗漏的html标签文本和属性里的文本
 - 各种环境配置的地址，从环境变量读，而非硬编码
+- 前后端补自动化测试：后端 pytest（mock LLM 客户端和 SSE 端点）、前端 Vitest + Testing Library（SSE 解析、IME 误触发送回归测试），接入 pre-commit 钩子，改动会自动跑
+- 加 `scripts/bench_latency.py`：对比非流式（S1，等完整回复）与流式（S2，首 token）延迟，跑 p50/p95
 - bug：日语输入法按 Enter 选词时会被误判成"发送"，监听浏览器isComposing状态
 - bug：服务器返回的内容未接入国际化，改为后端只抛错误类型，具体文案由前端按类型查多语言表
 

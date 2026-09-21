@@ -11,7 +11,15 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff>=0.9"]
+dev = [
+    "ruff>=0.9",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",  # LLM.chat_stream()/server.py 的端点都是 async def，测它们要跑在 event loop 里
+    "httpx>=0.27",           # FastAPI 官方推荐的测试客户端，直接调 ASGI app 不用真的起 uvicorn
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"  # 测 async 函数不用给每个测试函数单独加 @pytest.mark.asyncio
 
 [tool.ruff]
 line-length = 100

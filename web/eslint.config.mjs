@@ -7,12 +7,13 @@ const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
   {
-    // check-i18n-parity.mjs 管得到"三份翻译文件的 key 是否对齐"，
-    // 管不到"页面上这段文字有没有被换成 t(...)"——那是写代码那一刻就该
-    // 拦下来的事，不是等三份文件都写完才比对。这条规则扫 JSX 里的文本节点
-    // 和 placeholder/alt/aria-label/title/value 这几个常见的人话属性，
-    // 只要是没走 t(...) 的字面量文本就报错。
+    // 页面上写了句人话却忘了换成 t(...)，得在写代码这一刻就拦下来。
+    // 这条规则扫 JSX 里的文本节点和 placeholder/alt/aria-label/title/value
+    // 这几个常见的人话属性，只要是没走 t(...) 的字面量文本就报错。
     files: ["src/**/*.{jsx,tsx}"],
+    // 测试文件不受这条约束——fixture 里的字面量（比如 locale="zh"）
+    // 是测试数据，不是要展示给用户看的文案。
+    ignores: ["src/**/*.test.{jsx,tsx}"],
     ...i18next.configs["flat/recommended"],
     rules: {
       // 默认 mode 是 "jsx-text-only"，只查 JSX 文本节点，不查
