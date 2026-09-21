@@ -1,0 +1,28 @@
+{
+  "app": {
+    "title": "konkyo",
+    "subtitle": "S2 · Streaming Chat",
+    "languageLabel": "Language"
+  },
+  "chat": {
+    "emptyHint": "Type a question to start. The reply streams in as it's generated.",
+    "placeholder": "Ask a question — Enter to send, Shift+Enter for a new line",
+    "send": "Send",
+    "stop": "Stop",
+    "firstToken": "First token {ms}ms"
+  },
+  "errors": {
+    "network": "Can't reach the backend",
+    "http": "Request failed (HTTP {status})",
+    "read_interrupted": "Reading was interrupted",
+    "timeout": "Request timed out. Network issue, or the context is too long",
+    "api_error": "LLM service call failed",
+    "stream_interrupted": "Generation was interrupted",
+    "unknown": "Something went wrong"
+  },
+  "locale": {
+    "zh": "中文",
+    "ja": "日本語",
+    "en": "English"
+  }
+}

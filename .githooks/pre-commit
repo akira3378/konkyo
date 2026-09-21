@@ -1,7 +1,7 @@
 #!/bin/sh
-# シークレット混入を止める最後の防御。
+# シークレット混入を止める最後の防御 + lint/型チェック。
 # 有効化: git config core.hooksPath .githooks
-# 最初の防御は「そもそも書かない」こと。これは保険でしかない。
+# シークレットの最初の防御は「そもそも書かない」こと。これは保険でしかない。
 
 fail=0
 files=$(git diff --cached --name-only --diff-filter=ACM)
@@ -48,6 +48,28 @@ for f in $files; do
     fail=1
   fi
 done
+
+# 4) web/ に変更があるときだけ ESLint + 型チェック
+if echo "$files" | grep -q '^web/'; then
+  echo "web/ に変更あり: eslint / tsc を実行..."
+  if ! (cd web && npx eslint src); then
+    echo "BLOCKED: eslint がエラーを検出しました"
+    fail=1
+  fi
+  if ! (cd web && npx tsc --noEmit); then
+    echo "BLOCKED: tsc の型チェックに失敗しました"
+    fail=1
+  fi
+fi
+
+# 5) src/ (バックエンド) に変更があるときだけ ruff
+if echo "$files" | grep -q '^src/'; then
+  echo "src/ に変更あり: ruff を実行..."
+  if ! uv run ruff check src/konkyo/; then
+    echo "BLOCKED: ruff check がエラーを検出しました"
+    fail=1
+  fi
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo ""

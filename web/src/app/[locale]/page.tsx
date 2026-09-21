@@ -1,11 +1,16 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/Composer";
+import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { MessageBubble } from "@/components/MessageBubble";
-import { type ChatMessage, streamChat, SYSTEM_PROMPT } from "@/lib/chat";
+import { type ChatMessage, type ErrorCode, streamChat, SYSTEM_PROMPT } from "@/lib/chat";
 
 export default function Home() {
+  const t = useTranslations("chat");
+  const tApp = useTranslations("app");
+  const tErrors = useTranslations("errors");
   // messages 是整个对话历史，包含 system prompt。
   // 这就是 S1 注释里说的"聊天记忆本质是程序在管理这个 list"——
   // 现在管理这个 list 的从终端循环换成了这个组件的 state。
@@ -62,13 +67,19 @@ export default function Home() {
         },
         onUsage: (usage) => setUsage(usage),
         onDone: () => setStreaming(false),
-        onError: (message) => {
-          appendToLastAssistant(`\n\n[出错了：${message}]`);
+        onError: (code: ErrorCode, detail) => {
+          // headline 永远是翻译过的（查 messages/*.json 的 errors 命名空间）；
+          // detail 是后端/浏览器原始报错文本，故意不翻译，只是附在括号里
+          // 给排查用——这条 detail 从头到尾没有经过任何拼好的中文/日文
+          // 文案，所以不存在"忘了翻译"的问题：它本来就不该被翻译。
+          const headline = code === "http" ? tErrors("http", { status: detail ?? "?" }) : tErrors(code);
+          const text = detail && code !== "http" ? `${headline}（${detail}）` : headline;
+          appendToLastAssistant(`\n\n[${text}]`);
           setStreaming(false);
         },
       });
     },
-    [messages, appendToLastAssistant],
+    [messages, appendToLastAssistant, tErrors],
   );
 
   const handleStop = useCallback(() => {
@@ -94,20 +105,21 @@ export default function Home() {
     <div className="mx-auto flex h-dvh w-full max-w-2xl flex-col">
       <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
         <div className="flex items-baseline gap-2">
-          <span className="text-sm font-semibold tracking-tight">konkyo</span>
-          <span className="text-xs text-zinc-400">S2 · 流式聊天</span>
+          <span className="text-sm font-semibold tracking-tight">{tApp("title")}</span>
+          <span className="text-xs text-zinc-400">{tApp("subtitle")}</span>
         </div>
-        <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
-          {latencyMs !== null && <span>首 token {latencyMs}ms</span>}
-          {usage && <span className="hidden sm:inline">{usage}</span>}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
+            {latencyMs !== null && <span>{t("firstToken", { ms: latencyMs })}</span>}
+            {usage && <span className="hidden sm:inline">{usage}</span>}
+          </div>
+          <LocaleSwitcher />
         </div>
       </header>
 
       <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {visibleMessages.length === 0 && (
-          <p className="mt-10 text-center text-sm text-zinc-400">
-            输入问题开始对话。回答会一边生成一边显示。
-          </p>
+          <p className="mt-10 text-center text-sm text-zinc-400">{t("emptyHint")}</p>
         )}
         {visibleMessages.map((m, i) => (
           <MessageBubble

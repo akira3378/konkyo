@@ -62,3 +62,14 @@ class LLMConfig:
             api_key=key,
             model=os.getenv("LLM_ALT_MODEL", ""),
         )
+
+
+def cors_allow_origins() -> list[str]:
+    """server.py 允许哪些前端 origin 跨域调用。
+
+    本地开发默认只放开 localhost:3000。部署到真实域名时，
+    改这一个环境变量（逗号分隔多个 origin），不用碰 server.py 里的代码——
+    和 LLMConfig 的 base_url/model 一个道理：会随环境变化的值不写死在代码里。
+    """
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]

@@ -17,16 +17,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from konkyo.config import ConfigError
-from konkyo.llm import LLM
+from konkyo.config import ConfigError, cors_allow_origins
+from konkyo.llm import LLM, LLMError
 
 app = FastAPI()
 
-# 只放开本地前端的 origin。SSE 响应默认不带 CORS 头，浏览器会拦——
-# 这不是可选项，是浏览器同源策略逼的，前后端不同端口就是"跨域"。
+# SSE 响应默认不带 CORS 头，浏览器会拦——这不是可选项，是浏览器同源策略逼的，
+# 前后端不同端口就是"跨域"。允许哪些 origin 从环境变量读（见 config.py），
+# 部署到真实域名时改 CORS_ALLOW_ORIGINS，不用改这段代码。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=cors_allow_origins(),
     allow_methods=["POST"],
     allow_headers=["Content-Type"],
 )
@@ -76,8 +77,11 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
                     print(f"[chat] 首 token 延迟 {latency_ms:.0f}ms", file=sys.stderr)
 
                 yield _sse("delta", {"delta": chunk.delta})
-        except RuntimeError as e:
-            yield _sse("error", {"error": str(e)})
+        except LLMError as e:
+            # 只给 code，不给拼好的人话——翻译成哪种语言是前端的事
+            # （web/src/lib/chat.ts 的 onError 按 code 去 messages/*.json 查）。
+            # detail 是原始技术信息，前端可以选择性展示给开发者排查，不翻译。
+            yield _sse("error", {"code": e.code, "detail": e.detail})
         yield _sse("done", {})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

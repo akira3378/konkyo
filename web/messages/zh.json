@@ -1,0 +1,28 @@
+{
+  "app": {
+    "title": "konkyo",
+    "subtitle": "S2 · 流式聊天",
+    "languageLabel": "语言"
+  },
+  "chat": {
+    "emptyHint": "输入问题开始对话。回答会一边生成一边显示。",
+    "placeholder": "输入问题，Enter 发送，Shift+Enter 换行",
+    "send": "发送",
+    "stop": "停止",
+    "firstToken": "首 token {ms}ms"
+  },
+  "errors": {
+    "network": "连不上后端服务",
+    "http": "请求失败（HTTP {status}）",
+    "read_interrupted": "读取中断了",
+    "timeout": "请求超时。网络问题，或者上下文太长",
+    "api_error": "LLM 服务调用失败",
+    "stream_interrupted": "生成过程中断了",
+    "unknown": "出错了"
+  },
+  "locale": {
+    "zh": "中文",
+    "ja": "日本語",
+    "en": "English"
+  }
+}

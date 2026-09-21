@@ -1,0 +1,28 @@
+{
+  "app": {
+    "title": "konkyo",
+    "subtitle": "S2 · ストリーミングチャット",
+    "languageLabel": "言語"
+  },
+  "chat": {
+    "emptyHint": "質問を入力すると会話が始まります。回答は生成されながら表示されます。",
+    "placeholder": "質問を入力（Enterで送信、Shift+Enterで改行）",
+    "send": "送信",
+    "stop": "停止",
+    "firstToken": "初回トークン {ms}ms"
+  },
+  "errors": {
+    "network": "バックエンドに接続できません",
+    "http": "リクエストに失敗しました（HTTP {status}）",
+    "read_interrupted": "読み込みが中断されました",
+    "timeout": "リクエストがタイムアウトしました。ネットワークの問題か、文脈が長すぎる可能性があります",
+    "api_error": "LLM サービスの呼び出しに失敗しました",
+    "stream_interrupted": "生成中に中断されました",
+    "unknown": "エラーが発生しました"
+  },
+  "locale": {
+    "zh": "中文",
+    "ja": "日本語",
+    "en": "English"
+  }
+}

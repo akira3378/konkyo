@@ -10,11 +10,18 @@ S1 的核心认知：
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from openai import APIError, APITimeoutError, AsyncOpenAI, OpenAI
 
 from konkyo.config import LLMConfig
+
+# 后端只往外抛这几个固定的"错误种类"，不抛人话。
+# 人话（翻译成中/日/英）是前端的事——具体在 web/messages/{zh,ja,en}.json
+# 的 errors 命名空间里，key 必须和这里的字面量一一对应。
+# 两边靠字面量字符串手动对齐，没有自动生成，但正因为这个集合很小、
+# 很少变，手动对齐的成本远低于搭一套跨 Python/TS 的代码生成。
+LLMErrorCode = Literal["timeout", "api_error", "stream_interrupted"]
 
 
 @dataclass
@@ -45,6 +52,24 @@ class Usage:
             f"in={self.input_tokens} (缓存命中 {self.cache_hit_tokens}, {hit_rate:.0f}%) "
             f"out={self.output_tokens}"
         )
+
+
+class LLMError(RuntimeError):
+    """LLM 调用失败。带一个稳定的 code，给前端挑翻译用；detail 是原始技术
+    信息（provider 返回的英文报错等），只给开发者排查看，不奢望它是人话。
+
+    以前这里直接 raise RuntimeError("请求超时。网络问题，或者 context 太长。")——
+    这段中文会原样透传给前端、原样显示在界面上，不管界面当前是中/日/英哪个
+    语言。国际化如果只做"界面上的字面量"，后端抛出来的这种运行时文案就是
+    漏网之鱼：它不是组件里 t("...") 能覆盖到的地方，因为它压根不是前端写的字符串。
+    改成后端只给 code，前端拿 code 去查 messages/*.json，这类文案就不可能
+    再绕开翻译层直接上屏——不是"记得每次都翻译"，是结构上没有别的路可走。
+    """
+
+    def __init__(self, code: LLMErrorCode, detail: str = "") -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}" if detail else code)
 
 
 @dataclass
@@ -99,10 +124,10 @@ class LLM:
                 extra_body={"thinking": {"type": "disabled"}},
             )
         except APITimeoutError as e:
-            raise RuntimeError("请求超时。网络问题，或者 context 太长。") from e
+            raise LLMError("timeout", str(e)) from e
         except APIError as e:
-            # 不要把异常吞掉。把能帮助排查的信息带出去。
-            raise RuntimeError(f"API 调用失败：{e}") from e
+            # 不要把异常吞掉。把能帮助排查的信息带出去（放 detail，不是拼进人话文案里）。
+            raise LLMError("api_error", str(e)) from e
 
         return Reply(
             text=response.choices[0].message.content or "",
@@ -131,9 +156,9 @@ class LLM:
                 stream_options={"include_usage": True},
             )
         except APITimeoutError as e:
-            raise RuntimeError("请求超时。网络问题，或者 context 太长。") from e
+            raise LLMError("timeout", str(e)) from e
         except APIError as e:
-            raise RuntimeError(f"API 调用失败：{e}") from e
+            raise LLMError("api_error", str(e)) from e
 
         try:
             async for chunk in stream:
@@ -152,7 +177,7 @@ class LLM:
                     yield StreamChunk(delta=delta)
         except APIError as e:
             # 流已经开始才出错——前面吐出去的文字保留，只是没法继续了。
-            raise RuntimeError(f"流式读取中断：{e}") from e
+            raise LLMError("stream_interrupted", str(e)) from e
 
 
 def _parse_usage(raw: Any) -> Usage:
