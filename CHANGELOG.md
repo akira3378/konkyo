@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-22 · S3：分类 + 结构化输出 + 评测骨架（进行中）
+
+**Opus 5 独立完成：**
+- 每轮对话先分类再回答（`src/konkyo/router.py`、`workflow.py`）：一般手续问题 / 个案判断请求 / 文书草稿 / 范围外，四类各用自己的 system prompt；范围外不调用模型回答，界面显示固定文案（中/日/英）
+- 分类结果用 `response_format=json_schema` 输出、Pydantic 校验；不合格时把错误原文喂回去重试一次，仍不合格按一般手续问题回答并标出 fallback。API 本身出错不走 fallback，照常报错
+- "不对个案下判断"写进所有回答用 prompt 的开头，分类分错也不会绕开
+- SSE 多了 `route` 事件，界面在每个回答上方显示分到的类别；`usage` 改为一轮的合计（分类 + 回答）
+- CLI 改为和服务端走同一个 workflow（流式输出）
+- 实测 Ark：`json_object` 只保证是合法 JSON，prompt 里要求别的字段名时照着 prompt 输出；`json_schema` 仍按 schema 输出
+- bug（写的时候发现）：Pydantic 会把类的 docstring 放进 JSON Schema 的 description，每次分类都会把开发用的中文注释发给模型。改成普通注释，加回归测试
+- 评测骨架：`eval/questions.yaml`（20 题，Opus 5 起草、人工逐条确认）、`eval/run_routing.py`（路由正确率、结构化失败率、分类延迟、混淆矩阵，原始输出存 `eval/results/`）
+- `scripts/bench_latency.py --compare-routing`：交替跑 S2/S3 量首 token
+- 实测：三种结构化做法各 60 次调用，路由正确率都是 60/60、格式失败都是 0（题太容易，分不出差别，见 EVALUATION.md）；分类让首 token p50 从 1252ms 变成 2553ms（其中分类 1568ms），每轮 in token 97 → 447
+- 测试：后端 32 → 53 条，前端 16 → 18 条
+
 ## 2026-09-22 · S2 修正
 
 **Opus 5 审查时发现并独立修复：**

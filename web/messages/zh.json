@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "konkyo",
-    "subtitle": "S2 · 流式聊天",
+    "subtitle": "S3 · 工作流",
     "languageLabel": "语言"
   },
   "chat": {
@@ -10,7 +10,8 @@
     "send": "发送",
     "stop": "停止",
     "firstToken": "首 token {ms}ms",
-    "usage": "输入 {input} · 输出 {output} · 缓存 {rate}%"
+    "usage": "输入 {input} · 输出 {output} · 缓存 {rate}%",
+    "outOfScope": "konkyo 只回答日本公共手续（在留资格等）相关的问题。这个问题不在范围内，无法回答。"
   },
   "errors": {
     "network": "连不上后端服务",
@@ -20,6 +21,13 @@
     "api_error": "LLM 服务调用失败",
     "stream_interrupted": "生成过程中断了",
     "unknown": "出错了"
+  },
+  "routes": {
+    "document_question": "手续问题",
+    "judgment_request": "个案判断请求",
+    "draft_request": "文书草稿",
+    "out_of_scope": "范围外",
+    "fallback": "未能分类，按普通问题回答"
   },
   "locale": {
     "zh": "中文",

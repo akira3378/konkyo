@@ -1,7 +1,8 @@
 """S2 的"首 token 延迟"基准：同一个问题跑 N 次，量出 p50/p95，顺带记 token 用量。
 
 跑法：
-    uv run python scripts/bench_latency.py
+    uv run python scripts/bench_latency.py                    # S1 非流式 vs S2 流式
+    uv run python scripts/bench_latency.py --compare-routing  # S2 vs S3（先分类）的首 token
 
 对比两个模式，不是随便选的两个数字：
 - 非流式（S1 的 LLM.chat()）：用户从提问到看见任何文字，等的是"完整回复生成完"。
@@ -11,13 +12,23 @@
 
 固定问题、固定次数、直接打真实 API——这是 EVALUATION.md 自己定的规矩
 （"手动试几个例子不叫评测，要有固定数据集、能自动跑、可复现"）。
+
+--compare-routing（S3 起）：量"先分类再回答"给首 token 加了多少时间。
+- S2：带 SYSTEM_PROMPT 直接流式回答（S2 服务端的做法）
+- S3：workflow.run_turn()，先分类、再用同一个 SYSTEM_PROMPT 流式回答
+两边回答用的 prompt 一样，差别只有分类那一步。两种交替跑（S2、S3、S2、S3…）：
+EVALUATION.md 里记过同一份代码两天差一倍，分开两段时间跑的话，差异可能来自外部。
 """
 
+import argparse
 import asyncio
 import statistics
 import time
 
 from konkyo.llm import LLM, Usage
+from konkyo.prompts import SYSTEM_PROMPT
+from konkyo.router import RouteResult
+from konkyo.workflow import run_turn
 
 QUESTION = (
     "在留資格「留学」から「技術・人文知識・国際業務」への変更について、"
@@ -77,6 +88,69 @@ async def bench_streaming(llm: LLM, n: int) -> tuple[list[float], list[Usage]]:
     return latencies, usages
 
 
+async def first_token_s2(llm: LLM) -> tuple[float, Usage | None]:
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": QUESTION},
+    ]
+    start = time.monotonic()
+    first_token_at = None
+    usage = None
+    async for chunk in llm.chat_stream(messages):
+        if chunk.delta and first_token_at is None:
+            first_token_at = time.monotonic()
+        if chunk.usage is not None:
+            usage = chunk.usage
+    return (first_token_at - start) * 1000, usage
+
+
+async def first_token_s3(llm: LLM) -> tuple[float, float, str, Usage | None]:
+    """返回 (首 token 延迟, 其中分类花的时间, 分到的类别, 这一轮的 token 合计)。"""
+    start = time.monotonic()
+    first_token_at = None
+    route_ms = 0.0
+    route = "?"
+    usage = None
+    async for event in run_turn(llm, [{"role": "user", "content": QUESTION}]):
+        if isinstance(event, RouteResult):
+            route_ms = event.latency_ms
+            route = event.route
+        elif event.usage is not None:
+            usage = event.usage
+        elif event.delta and first_token_at is None:
+            first_token_at = time.monotonic()
+    return (first_token_at - start) * 1000, route_ms, route, usage
+
+
+async def bench_routing(llm: LLM, n: int) -> None:
+    s2: list[float] = []
+    s3: list[float] = []
+    router: list[float] = []
+    s2_usage: list[Usage] = []
+    s3_usage: list[Usage] = []
+    for i in range(n):
+        ms, usage = await first_token_s2(llm)
+        s2.append(ms)
+        s2_usage.append(usage)
+        print(f"  [S2 {i + 1}/{n}] 首token {ms:.0f}ms  {usage}")
+
+        ms, route_ms, route, usage = await first_token_s3(llm)
+        s3.append(ms)
+        router.append(route_ms)
+        s3_usage.append(usage)
+        print(f"  [S3 {i + 1}/{n}] 首token {ms:.0f}ms（分类 {route_ms:.0f}ms, {route}）  {usage}")
+    await llm.async_client.close()
+
+    print("\n=== 结果 ===")
+    for name, data in [("S2 首 token", s2), ("S3 首 token", s3), ("S3 其中分类", router)]:
+        print(
+            f"{name}：p50={percentile(data, 0.5):.0f}ms  p95={percentile(data, 0.95):.0f}ms  "
+            f"mean={statistics.mean(data):.0f}ms"
+        )
+    print(f"S2 token：{summarize_usage(s2_usage)}")
+    print(f"S3 token（分类 + 回答）：{summarize_usage(s3_usage)}")
+
+
 def summarize_usage(usages: list[Usage]) -> str:
     ins = [u.input_tokens for u in usages]
     outs = [u.output_tokens for u in usages]
@@ -87,9 +161,18 @@ def summarize_usage(usages: list[Usage]) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--compare-routing", action="store_true")
+    args = parser.parse_args()
+
     llm = LLM()
     print(f"model={llm.config.model}  N={N}")
     print(f"问题：{QUESTION}\n")
+
+    if args.compare_routing:
+        print("交替测 S2（直接回答）和 S3（先分类）的首 token...")
+        asyncio.run(bench_routing(llm, N))
+        return
 
     print("测非流式（S1 模式，等完整回复）...")
     non_streaming, non_streaming_usage = bench_non_streaming(llm, N)

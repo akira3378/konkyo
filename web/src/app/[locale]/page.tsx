@@ -63,6 +63,22 @@ export default function Home() {
       abortRef.current = controller;
 
       streamChat(toRequestHistory(withQuestion), controller.signal, {
+        onRoute: (route, fallback) => {
+          // 分类结果挂在 route 字段上给气泡显示标签，不进 content。
+          // out_of_scope 后端不生成回答，这里直接填固定文案——文案按界面语言走
+          // messages/*.json，和错误文案同一个思路。它会作为这一轮的回答留在历史里，
+          // 下一轮模型能看到"上一个问题被判为范围外"。
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            next[next.length - 1] = {
+              ...last,
+              route: { route, fallback },
+              ...(route === "out_of_scope" ? { content: t("outOfScope") } : {}),
+            };
+            return next;
+          });
+        },
         onDelta: (delta) => {
           if (!gotFirstTokenRef.current) {
             gotFirstTokenRef.current = true;
@@ -86,7 +102,7 @@ export default function Home() {
         },
       });
     },
-    [messages, appendToLastAssistant],
+    [messages, appendToLastAssistant, t],
   );
 
   const handleStop = useCallback(() => {

@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "konkyo",
-    "subtitle": "S2 · Streaming Chat",
+    "subtitle": "S3 · Workflow",
     "languageLabel": "Language"
   },
   "chat": {
@@ -10,7 +10,8 @@
     "send": "Send",
     "stop": "Stop",
     "firstToken": "First token {ms}ms",
-    "usage": "in {input} · out {output} · cache {rate}%"
+    "usage": "in {input} · out {output} · cache {rate}%",
+    "outOfScope": "konkyo answers questions about Japanese public procedures (such as residence status). This question is outside that scope, so it can't be answered here."
   },
   "errors": {
     "network": "Can't reach the backend",
@@ -20,6 +21,13 @@
     "api_error": "LLM service call failed",
     "stream_interrupted": "Generation was interrupted",
     "unknown": "Something went wrong"
+  },
+  "routes": {
+    "document_question": "Procedure question",
+    "judgment_request": "Request for a case judgment",
+    "draft_request": "Document draft",
+    "out_of_scope": "Out of scope",
+    "fallback": "couldn't classify, answered as a general question"
   },
   "locale": {
     "zh": "中文",

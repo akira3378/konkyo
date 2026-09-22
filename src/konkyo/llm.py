@@ -46,6 +46,15 @@ class Usage:
     cache_hit_tokens: int  # 命中前缀缓存的 input token
     cache_miss_tokens: int
 
+    def __add__(self, other: "Usage") -> "Usage":
+        # S3 起一轮对话有两次调用（先分类、再回答），界面上显示的是这一轮的合计。
+        return Usage(
+            self.input_tokens + other.input_tokens,
+            self.output_tokens + other.output_tokens,
+            self.cache_hit_tokens + other.cache_hit_tokens,
+            self.cache_miss_tokens + other.cache_miss_tokens,
+        )
+
     def __str__(self) -> str:
         hit_rate = self.cache_hit_tokens / self.input_tokens * 100 if self.input_tokens else 0
         return (
@@ -103,6 +112,22 @@ class LLM:
             base_url=self.config.base_url, api_key=self.config.api_key, timeout=60
         )
 
+    def _base_kwargs(self, messages: list[dict[str, str]], temperature: float) -> dict[str, Any]:
+        """chat() / chat_stream() / complete() 三种调用共用的请求参数。
+
+        deepseek-v4.1-flash 默认会先生成一段隐藏思维链再回答，这段思考本身
+        按输出 token 计费，之前实测占了 out 的九成以上——这里的问答和分类都
+        不需要这个。这个字段 OpenAI SDK 不认识，走 extra_body 原样透传。
+        没按 provider 分支：目前只在 Ark 上验证过能用，还没拿 DeepSeek 官方
+        试过会不会报错——真遇到报错再按 provider 区分，不提前猜。
+        """
+        return {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": temperature,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+
     def chat(self, messages: list[dict[str, str]], temperature: float = 0.3) -> Reply:
         """发一轮对话，拿回一个回复。
 
@@ -111,22 +136,48 @@ class LLM:
         它"记得"，是因为我们每次都把完整历史重新发过去。
         所谓"聊天记忆"，本质是程序在管理这个 list。（S2 会真正用到）
         """
-        # deepseek-v4.1-flash 默认会先生成一段隐藏思维链再回答，这段思考本身
-        # 按输出 token 计费，之前实测占了 out 的九成以上——S1 只是简单问答，
-        # 不需要这个。这个字段 OpenAI SDK 不认识，走 extra_body 原样透传。
-        # 没按 provider 分支：目前只在 Ark 上验证过能用，还没拿 DeepSeek 官方
-        # 试过会不会报错——真遇到报错再按 provider 区分，不提前猜。
         try:
-            response = self.client.chat.completions.create(
-                model=self.config.model,
-                messages=messages,  # type: ignore[arg-type]
-                temperature=temperature,
-                extra_body={"thinking": {"type": "disabled"}},
-            )
+            kwargs = self._base_kwargs(messages, temperature)
+            response = self.client.chat.completions.create(**kwargs)
         except APITimeoutError as e:
             raise LLMError("timeout", str(e)) from e
         except APIError as e:
             # 不要把异常吞掉。把能帮助排查的信息带出去（放 detail，不是拼进人话文案里）。
+            raise LLMError("api_error", str(e)) from e
+
+        return Reply(
+            text=response.choices[0].message.content or "",
+            usage=_parse_usage(response.usage),
+        )
+
+    async def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.3,
+        response_format: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+    ) -> Reply:
+        """异步、非流式。S3 的分类（router.py）用这个。
+
+        为什么不直接用 chat()：chat() 是同步客户端，在 FastAPI 的 async 端点里
+        调用会卡住整个事件循环（和 chat_stream() 必须用异步客户端是同一个理由）。
+        为什么不用 chat_stream()：分类结果是一段 JSON，不收完整就没法校验，
+        流式对它没有意义。
+
+        response_format / max_tokens 只在传了的时候才放进请求：显式传 None
+        SDK 会发一个 null 过去，provider 未必当成"没传"。
+        """
+        kwargs = self._base_kwargs(messages, temperature)
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        try:
+            response = await self.async_client.chat.completions.create(**kwargs)
+        except APITimeoutError as e:
+            raise LLMError("timeout", str(e)) from e
+        except APIError as e:
             raise LLMError("api_error", str(e)) from e
 
         return Reply(
@@ -147,10 +198,7 @@ class LLM:
         """
         try:
             stream = await self.async_client.chat.completions.create(
-                model=self.config.model,
-                messages=messages,  # type: ignore[arg-type]
-                temperature=temperature,
-                extra_body={"thinking": {"type": "disabled"}},
+                **self._base_kwargs(messages, temperature),
                 stream=True,
                 # 不加这个，流式响应完全不带 usage——只有非流式请求默认带。
                 stream_options={"include_usage": True},

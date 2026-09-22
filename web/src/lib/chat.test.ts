@@ -20,6 +20,7 @@ function makeSSEResponse(rawChunks: string[], status = 200): Response {
 
 function makeCallbacks(): StreamCallbacks {
   return {
+    onRoute: vi.fn(),
     onDelta: vi.fn(),
     onUsage: vi.fn(),
     onDone: vi.fn(),
@@ -32,8 +33,9 @@ afterEach(() => {
 });
 
 describe("streamChat", () => {
-  it("按顺序把 delta/usage/done 事件转发给对应的回调", async () => {
+  it("按顺序把 route/delta/usage/done 事件转发给对应的回调", async () => {
     const body = [
+      'event: route\ndata: {"route":"document_question","fallback":false}\n\n',
       'event: delta\ndata: {"delta":"你"}\n\n',
       'event: delta\ndata: {"delta":"好"}\n\n',
       'event: usage\ndata: {"input_tokens":1,"output_tokens":2,"cache_hit_tokens":0,"cache_miss_tokens":1}\n\n',
@@ -47,6 +49,7 @@ describe("streamChat", () => {
     const callbacks = makeCallbacks();
     await streamChat([{ role: "user", content: "hi" }], new AbortController().signal, callbacks);
 
+    expect(callbacks.onRoute).toHaveBeenCalledExactlyOnceWith("document_question", false);
     expect(callbacks.onDelta).toHaveBeenNthCalledWith(1, "你");
     expect(callbacks.onDelta).toHaveBeenNthCalledWith(2, "好");
     expect(callbacks.onUsage).toHaveBeenCalledWith({
@@ -111,6 +114,26 @@ describe("streamChat", () => {
     expect(callbacks.onDone).not.toHaveBeenCalled();
   });
 
+  it("fallback=true 原样转给回调：界面要标出这一轮是分类失败后按普通问题回答的", async () => {
+    const body = 'event: route\ndata: {"route":"document_question","fallback":true}\n\n';
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse([body])));
+
+    const callbacks = makeCallbacks();
+    await streamChat([], new AbortController().signal, callbacks);
+
+    expect(callbacks.onRoute).toHaveBeenCalledWith("document_question", true);
+  });
+
+  it("不认识的 route 不转给回调，而不是猜一个类别显示出来", async () => {
+    const body = 'event: route\ndata: {"route":"some_future_route","fallback":false}\n\n';
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse([body])));
+
+    const callbacks = makeCallbacks();
+    await streamChat([], new AbortController().signal, callbacks);
+
+    expect(callbacks.onRoute).not.toHaveBeenCalled();
+  });
+
   it("后端给了个前端不认识的 error code 时兜底成 unknown，而不是把陌生字符串硬塞给翻译层", async () => {
     const body = 'event: error\ndata: {"code":"some_future_code","detail":"x"}\n\n';
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse([body])));
@@ -160,8 +183,13 @@ describe("toRequestHistory", () => {
   });
 
   it("发出去的每条只有 role 和 content，不带界面用的字段", () => {
-    const messages: UIMessage[] = [{ role: "user", content: "Q1" }];
+    const messages: UIMessage[] = [
+      { role: "user", content: "Q1" },
+      { role: "assistant", content: "A1", route: { route: "document_question", fallback: false } },
+    ];
 
-    expect(Object.keys(toRequestHistory(messages)[0]).sort()).toEqual(["content", "role"]);
+    for (const m of toRequestHistory(messages)) {
+      expect(Object.keys(m).sort()).toEqual(["content", "role"]);
+    }
   });
 });

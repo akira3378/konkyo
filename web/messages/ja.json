@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "konkyo",
-    "subtitle": "S2 · ストリーミングチャット",
+    "subtitle": "S3 · ワークフロー",
     "languageLabel": "言語"
   },
   "chat": {
@@ -10,7 +10,8 @@
     "send": "送信",
     "stop": "停止",
     "firstToken": "初回トークン {ms}ms",
-    "usage": "入力 {input}・出力 {output}・キャッシュ {rate}%"
+    "usage": "入力 {input}・出力 {output}・キャッシュ {rate}%",
+    "outOfScope": "konkyo は、日本の公的な手続き（在留資格など）についての質問に答えるためのものです。この質問は対象外のため、お答えできません。"
   },
   "errors": {
     "network": "バックエンドに接続できません",
@@ -20,6 +21,13 @@
     "api_error": "LLM サービスの呼び出しに失敗しました",
     "stream_interrupted": "生成中に中断されました",
     "unknown": "エラーが発生しました"
+  },
+  "routes": {
+    "document_question": "手続きの質問",
+    "judgment_request": "個別判断の依頼",
+    "draft_request": "書類の下書き",
+    "out_of_scope": "対象外",
+    "fallback": "分類できなかったため通常の質問として回答"
   },
   "locale": {
     "zh": "中文",

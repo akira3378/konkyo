@@ -12,19 +12,38 @@ import httpx
 import pytest
 
 import konkyo.server as server_module
-from konkyo.llm import LLMError, StreamChunk, Usage
-from konkyo.prompts import SYSTEM_PROMPT
+from konkyo.llm import LLMError, Reply, StreamChunk, Usage
+from konkyo.prompts import DRAFT_PROMPT, JUDGMENT_PROMPT, SYSTEM_PROMPT
+
+ROUTER_USAGE = Usage(50, 10, 0, 50)
+
+
+def route_json(route: str) -> str:
+    return json.dumps({"reason": "テスト", "route": route})
 
 
 class FakeLLM:
-    """站在 server.py 的角度，LLM 只有一个方法要交互：chat_stream()。
-    假的实现只要形状对（async generator，吐 StreamChunk）就够了。
+    """站在 server.py（经 workflow.py）的角度，LLM 有两个方法要交互：
+    complete()（分类，返回一段 JSON）和 chat_stream()（回答，async generator）。
+    假的实现只要形状对就够了。
     """
 
-    def __init__(self, chunks=None, error: LLMError | None = None):
+    def __init__(
+        self,
+        chunks=None,
+        error: LLMError | None = None,
+        route: str = "document_question",
+        router_text: str | None = None,
+    ):
         self._chunks = chunks or []
         self._error = error
-        self.received_messages = None  # 记下 server.py 实际发给 LLM 的 messages
+        self._router_text = router_text if router_text is not None else route_json(route)
+        self.router_calls = 0
+        self.received_messages = None  # 记下回答那一次调用实际发给 LLM 的 messages
+
+    async def complete(self, messages, **kwargs):
+        self.router_calls += 1
+        return Reply(text=self._router_text, usage=ROUTER_USAGE)
 
     async def chat_stream(self, messages, temperature=0.3):
         self.received_messages = messages
@@ -69,7 +88,7 @@ async def post_chat(messages=None) -> httpx.Response:
         )
 
 
-async def test_streams_deltas_then_usage_then_done():
+async def test_streams_route_then_deltas_then_usage_then_done():
     server_module.llm = FakeLLM(
         chunks=[
             StreamChunk(delta="你"),
@@ -81,20 +100,22 @@ async def test_streams_deltas_then_usage_then_done():
     response = await post_chat()
     events = parse_sse_events(response.text)
 
-    assert [e for e, _ in events] == ["delta", "delta", "usage", "done"]
+    assert [e for e, _ in events] == ["route", "delta", "delta", "usage", "done"]
+    assert events[0] == ("route", {"route": "document_question", "fallback": False})
     assert [d["delta"] for e, d in events if e == "delta"] == ["你", "好"]
 
 
-async def test_usage_is_numbers_not_prose():
+async def test_usage_is_numbers_not_prose_and_includes_router_call():
     # 回归测试：以前 usage 发的是 str(Usage)，里面的"缓存命中"原样出现在
     # 日文/英文界面上。现在只发数字，文案由前端按语言拼。
+    # S3 起是这一轮的合计：分类（50/10）+ 回答（10/5）。
     server_module.llm = FakeLLM(chunks=[StreamChunk(usage=Usage(10, 5, 2, 8))])
 
     response = await post_chat()
     usage_events = [d for e, d in parse_sse_events(response.text) if e == "usage"]
 
     assert usage_events == [
-        {"input_tokens": 10, "output_tokens": 5, "cache_hit_tokens": 2, "cache_miss_tokens": 8}
+        {"input_tokens": 60, "output_tokens": 15, "cache_hit_tokens": 2, "cache_miss_tokens": 58}
     ]
 
 
@@ -106,6 +127,65 @@ async def test_system_prompt_is_added_by_server():
 
     assert fake.received_messages[0] == {"role": "system", "content": SYSTEM_PROMPT}
     assert fake.received_messages[1:] == [{"role": "user", "content": "質問"}]
+
+
+@pytest.mark.parametrize(
+    ("route", "prompt"),
+    [
+        ("document_question", SYSTEM_PROMPT),
+        ("judgment_request", JUDGMENT_PROMPT),
+        ("draft_request", DRAFT_PROMPT),
+    ],
+)
+async def test_each_route_answers_with_its_own_prompt(route, prompt):
+    fake = FakeLLM(chunks=[StreamChunk(delta="x")], route=route)
+    server_module.llm = fake
+
+    response = await post_chat()
+
+    assert fake.received_messages[0] == {"role": "system", "content": prompt}
+    assert parse_sse_events(response.text)[0] == ("route", {"route": route, "fallback": False})
+
+
+async def test_out_of_scope_does_not_call_the_model_for_an_answer():
+    # 固定文案由前端显示，后端不生成：没有 delta，只有 route、分类的 usage、done。
+    fake = FakeLLM(chunks=[StreamChunk(delta="不该出现")], route="out_of_scope")
+    server_module.llm = fake
+
+    response = await post_chat()
+    events = parse_sse_events(response.text)
+
+    assert [e for e, _ in events] == ["route", "usage", "done"]
+    assert fake.received_messages is None
+    assert events[1][1]["input_tokens"] == ROUTER_USAGE.input_tokens
+
+
+async def test_unparseable_route_falls_back_and_says_so():
+    fake = FakeLLM(chunks=[StreamChunk(delta="x")], router_text="分類できません")
+    server_module.llm = fake
+
+    response = await post_chat()
+    events = parse_sse_events(response.text)
+
+    assert events[0] == ("route", {"route": "document_question", "fallback": True})
+    assert fake.router_calls == 2  # 第一次 + 带错误重试一次
+    assert fake.received_messages[0] == {"role": "system", "content": SYSTEM_PROMPT}
+
+
+async def test_router_api_error_becomes_error_event():
+    fake = FakeLLM()
+
+    async def failing_complete(messages, **kwargs):
+        raise LLMError("timeout", "slow")
+
+    fake.complete = failing_complete
+    server_module.llm = fake
+
+    response = await post_chat()
+    events = parse_sse_events(response.text)
+
+    assert events == [("error", {"code": "timeout", "detail": "slow"}), ("done", {})]
+    assert fake.received_messages is None
 
 
 @pytest.mark.parametrize(
@@ -175,7 +255,7 @@ async def test_error_becomes_code_and_detail_not_prose():
     assert len(error_events) == 1
     assert error_events[0] == {"code": "api_error", "detail": "上游 401"}
     # 断线前已经生成的内容要保留，不因为后面出错就丢掉
-    assert events[0] == ("delta", {"delta": "开始了"})
+    assert events[1] == ("delta", {"delta": "开始了"})
 
 
 async def test_cors_allows_configured_origin():

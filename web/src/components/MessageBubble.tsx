@@ -8,8 +8,9 @@ type Props = {
 
 export function MessageBubble({ message, streaming }: Props) {
   const tErrors = useTranslations("errors");
+  const tRoutes = useTranslations("routes");
   const isUser = message.role === "user";
-  const { error } = message;
+  const { error, route } = message;
 
   // headline 永远是翻译过的（查 messages/*.json 的 errors 命名空间）；
   // detail 是后端/浏览器的原始报错，故意不翻译，只附在括号里给排查用。
@@ -29,6 +30,14 @@ export function MessageBubble({ message, streaming }: Props) {
             : "bg-zinc-100 text-zinc-900 rounded-bl-sm dark:bg-zinc-800 dark:text-zinc-100"
         }`}
       >
+        {route && (
+          // 这一轮被分到了哪一类（S3）。放在回答上面，让用户知道"为什么这样回答"：
+          // 比如被判为个案判断请求，回答开头就会先说明不能判断。
+          <p className="mb-1 text-[11px] font-medium text-zinc-400">
+            {tRoutes(route.route)}
+            {route.fallback && ` · ${tRoutes("fallback")}`}
+          </p>
+        )}
         {message.content}
         {streaming && (
           <span className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[2px] animate-pulse bg-current align-middle" />

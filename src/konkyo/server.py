@@ -1,10 +1,12 @@
-"""S2：给前端提供一个流式聊天端点。
+"""给前端提供一个流式聊天端点（S2），S3 起中间多了一步分类。
 
 跑法：
     uv run uvicorn konkyo.server:app --reload --port 8000
 
-只做这一件事：把 llm.chat_stream() 的 async generator 转成 SSE，
+只做这一件事：把 workflow.run_turn() 的 async generator 转成 SSE，
 通过 HTTP 推给浏览器。没有会话持久化、没有鉴权——那些不是这一步要学的。
+
+事件顺序：route → delta… → usage → done（出错时 error → done）。
 """
 
 import json
@@ -22,7 +24,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from konkyo.config import ConfigError, cors_allow_origins
 from konkyo.llm import LLM, LLMError
-from konkyo.prompts import SYSTEM_PROMPT
+from konkyo.router import RouteResult
+from konkyo.workflow import run_turn
 
 app = FastAPI()
 
@@ -85,36 +88,47 @@ def _sse(event: str, data: dict) -> str:
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        *(m.model_dump() for m in req.messages),
-    ]
+    # 不含 system：回答用哪个 system prompt 要等分类完才知道，由 workflow.py 加。
+    history = [m.model_dump() for m in req.messages]
 
     async def event_stream() -> AsyncIterator[str]:
         start = time.monotonic()
         first_token_at: float | None = None
         try:
             # aclosing：下面 break 出去的时候立刻 aclose() 这个生成器，
-            # 让 llm.chat_stream() 的 finally 马上关掉上游连接，
+            # 一路传到 llm.chat_stream() 的 finally，马上关掉上游连接，
             # 而不是等垃圾回收哪天顺手关。
-            async with aclosing(llm.chat_stream(messages)) as chunks:
-                async for chunk in chunks:
+            async with aclosing(run_turn(llm, history)) as events:
+                async for chunk in events:
                     # 客户端断开（用户点了停止，AbortController.abort() 触发的）
                     # 就别再继续从上游读了。
                     if await request.is_disconnected():
                         print("[chat] 客户端已断开，停止转发", file=sys.stderr)
                         break
 
+                    if isinstance(chunk, RouteResult):
+                        # 日志只记类别和耗时，不记 reason：reason 是模型对用户问题的转述，
+                        # 可能带着用户的个人信息（AGENTS.md 红线 3）。
+                        print(
+                            f"[chat] route={chunk.route} fallback={chunk.fallback} "
+                            f"attempts={len(chunk.attempts)} {chunk.latency_ms:.0f}ms",
+                            file=sys.stderr,
+                        )
+                        yield _sse("route", {"route": chunk.route, "fallback": chunk.fallback})
+                        continue
+
                     if chunk.usage is not None:
                         # 发结构化的数字，不发拼好的句子——和 error 只发 code 是同一个
                         # 理由：显示成哪种语言是前端的事。以前这里发 str(usage)，
                         # 里面的"缓存命中"四个中文字原样出现在日文/英文界面上。
+                        # S3 起是这一轮的合计（分类 + 回答），见 workflow.py。
                         yield _sse("usage", asdict(chunk.usage))
                         continue
 
                     if first_token_at is None:
                         first_token_at = time.monotonic()
                         latency_ms = (first_token_at - start) * 1000
+                        # 从收到请求算起，所以含分类那一次调用的时间。
                         print(f"[chat] 首 token 延迟 {latency_ms:.0f}ms", file=sys.stderr)
 
                     yield _sse("delta", {"delta": chunk.delta})

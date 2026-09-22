@@ -16,6 +16,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",  # LLM.chat_stream()/server.py 的端点都是 async def，测它们要跑在 event loop 里
     "httpx>=0.27",           # FastAPI 官方推荐的测试客户端，直接调 ASGI app 不用真的起 uvicorn
+    "pyyaml>=6.0",           # S3 起：读评测题库 eval/questions.yaml（YAML 能写注释，标注理由直接写在题旁边）
 ]
 
 [tool.pytest.ini_options]

@@ -46,10 +46,25 @@ export type Usage = {
   cache_miss_tokens: number;
 };
 
-/** 界面上的一条消息：比 ChatMessage 多一个只给界面看的 error。
- * 出错信息不能拼进 content——content 会作为对话历史发回给模型。 */
+/**
+ * 后端把这一轮问题分到了哪一类（S3）。和 src/konkyo/router.py 的 Route 一一对应，
+ * 手动对齐（同 ErrorCode）。显示成什么字由 messages/*.json 的 routes 命名空间决定。
+ */
+export type Route = "document_question" | "judgment_request" | "draft_request" | "out_of_scope";
+
+const KNOWN_ROUTES: Route[] = [
+  "document_question",
+  "judgment_request",
+  "draft_request",
+  "out_of_scope",
+];
+
+/** 界面上的一条消息：比 ChatMessage 多几个只给界面看的字段。
+ * 出错信息、分类结果都不能拼进 content——content 会作为对话历史发回给模型。 */
 export type UIMessage = ChatMessage & {
   error?: { code: ErrorCode; detail?: string };
+  /** fallback=true：分类器的输出没通过校验，后端按 document_question 回答了。 */
+  route?: { route: Route; fallback: boolean };
 };
 
 /**
@@ -74,6 +89,8 @@ export function toRequestHistory(messages: UIMessage[]): ChatMessage[] {
 }
 
 export type StreamCallbacks = {
+  /** 每轮最先到。out_of_scope 之后不会有 delta：后端不生成，界面显示固定文案。 */
+  onRoute: (route: Route, fallback: boolean) => void;
   onDelta: (text: string) => void;
   onUsage: (usage: Usage) => void;
   onDone: () => void;
@@ -146,6 +163,13 @@ function dispatch(rawMessage: string, callbacks: StreamCallbacks): void {
 
   const payload = JSON.parse(data) as Record<string, unknown>;
   switch (event) {
+    case "route":
+      // 不认识的类别（两边字面量没对齐）就当没收到：不显示标签，回答照常显示。
+      // 和 error 兜底成 unknown 不同，这里没有"兜底类别"可选——猜一个类别显示出来是误导。
+      if (KNOWN_ROUTES.includes(payload.route as Route)) {
+        callbacks.onRoute(payload.route as Route, payload.fallback === true);
+      }
+      break;
     case "delta":
       callbacks.onDelta((payload.delta as string | undefined) ?? "");
       break;
