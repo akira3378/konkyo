@@ -11,11 +11,7 @@ import sys
 
 from konkyo.config import ConfigError
 from konkyo.llm import LLM
-
-SYSTEM_PROMPT = (
-    "あなたは日本の公的文書について答えるアシスタントです。"
-    "根拠が確認できないことは推測せず、「確認できません」と答えてください。"
-)
+from konkyo.prompts import SYSTEM_PROMPT
 
 
 def main() -> int:

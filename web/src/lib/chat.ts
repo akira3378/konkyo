@@ -6,8 +6,11 @@
  * 这部分逻辑正是 Vercel AI SDK 的 useChat 帮你封装掉的东西。
  */
 
-export type ChatRole = "system" | "user" | "assistant";
+// 没有 "system"：system prompt 由服务端加（src/konkyo/prompts.py），
+// 后端也会拒绝客户端发来的 system 消息。
+export type ChatRole = "user" | "assistant";
 
+/** 发给后端的一条消息。 */
 export type ChatMessage = {
   role: ChatRole;
   content: string;
@@ -34,9 +37,45 @@ export type ErrorCode =
   | "stream_interrupted"
   | "unknown";
 
+/** 一次调用的 token 用量。字段和 src/konkyo/llm.py 的 Usage 一一对应。
+ * 后端只发数字，显示成哪种语言的句子由界面决定（和 ErrorCode 同一个思路）。 */
+export type Usage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
+};
+
+/** 界面上的一条消息：比 ChatMessage 多一个只给界面看的 error。
+ * 出错信息不能拼进 content——content 会作为对话历史发回给模型。 */
+export type UIMessage = ChatMessage & {
+  error?: { code: ErrorCode; detail?: string };
+};
+
+/**
+ * 从界面上的消息里挑出这次要发给后端的对话历史。
+ *
+ * 出错的那一轮（带 error 的 assistant，连同它前面那条 user）整轮不发——
+ * 和 CLI 里 messages.pop() 是同一条规则：没得到回答的问题不留在历史里。
+ * 流到一半出错的，已经显示出来的半截回答也一起不发：它不是一个完整的回答。
+ *
+ * 用户主动停止留下的半截回答（没有 error）照常发：那是用户看过、
+ * 自己决定打断的内容，下一轮的提问可能就是接着它问的。
+ */
+export function toRequestHistory(messages: UIMessage[]): ChatMessage[] {
+  const history: ChatMessage[] = [];
+  messages.forEach((m, i) => {
+    const next = messages[i + 1];
+    if (m.role === "user" && next?.role === "assistant" && next.error) return;
+    if (m.role === "assistant" && (m.error || m.content === "")) return;
+    history.push({ role: m.role, content: m.content });
+  });
+  return history;
+}
+
 export type StreamCallbacks = {
   onDelta: (text: string) => void;
-  onUsage: (usage: string) => void;
+  onUsage: (usage: Usage) => void;
   onDone: () => void;
   /** detail 是原始技术信息（HTTP 状态码、provider 报错原文等），不翻译，调用方决定要不要显示。 */
   onError: (code: ErrorCode, detail?: string) => void;
@@ -105,13 +144,13 @@ function dispatch(rawMessage: string, callbacks: StreamCallbacks): void {
   }
   if (!data) return;
 
-  const payload = JSON.parse(data) as Record<string, string>;
+  const payload = JSON.parse(data) as Record<string, unknown>;
   switch (event) {
     case "delta":
-      callbacks.onDelta(payload.delta ?? "");
+      callbacks.onDelta((payload.delta as string | undefined) ?? "");
       break;
     case "usage":
-      callbacks.onUsage(payload.usage ?? "");
+      callbacks.onUsage(payload as Usage);
       break;
     case "error": {
       // 后端只保证发 code 是 LLMErrorCode 里的一个，但跨语言边界，类型
@@ -128,7 +167,7 @@ function dispatch(rawMessage: string, callbacks: StreamCallbacks): void {
       const code = knownCodes.includes(payload.code as ErrorCode)
         ? (payload.code as ErrorCode)
         : "unknown";
-      callbacks.onError(code, payload.detail);
+      callbacks.onError(code, payload.detail as string | undefined);
       break;
     }
     case "done":
@@ -136,7 +175,3 @@ function dispatch(rawMessage: string, callbacks: StreamCallbacks): void {
       break;
   }
 }
-
-export const SYSTEM_PROMPT =
-  "あなたは日本の公的文書について答えるアシスタントです。" +
-  "根拠が確認できないことは推測せず、「確認できません」と答えてください。";

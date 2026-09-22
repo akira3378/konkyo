@@ -5,6 +5,7 @@
 写的这层逻辑」：异常怎么转成 LLMError、流式 chunk 怎么拼成 delta/usage。
 """
 
+from contextlib import aclosing
 from types import SimpleNamespace
 
 import httpx
@@ -145,6 +146,56 @@ class TestChatStream:
 
         usage_chunks = [c for c in chunks if c.usage is not None]
         assert len(usage_chunks) == 1
+
+    async def test_keeps_text_of_chunk_that_also_carries_usage(self):
+        # 回归测试：实测 Ark 把最后一段正文和 usage 放在同一个 chunk 里，
+        # 之后再单独发一次 usage。以前先判断 usage 就 return，最后一段正文丢了。
+        llm = make_llm()
+
+        async def fake_stream():
+            yield make_delta_chunk("こ")
+            yield SimpleNamespace(
+                usage=make_usage_obj(),
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="んにちは！"))],
+            )
+            yield make_usage_chunk(make_usage_obj())
+
+        async def fake_create(**kwargs):
+            return fake_stream()
+
+        llm.async_client.chat.completions.create = fake_create
+
+        chunks = [c async for c in llm.chat_stream([{"role": "user", "content": "hi"}])]
+
+        assert "".join(c.delta for c in chunks) == "こんにちは！"
+        assert len([c for c in chunks if c.usage is not None]) == 1
+        assert chunks[-1].usage is not None  # usage 在正文之后
+
+    async def test_closes_upstream_when_consumer_stops_early(self):
+        # 用户点"停止"时 server.py 会 break 出去并 aclose() 这个生成器。
+        # 这里断言：上游的流也会被立刻关掉，不是等垃圾回收。
+        llm = make_llm()
+        upstream_closed = False
+
+        async def fake_stream():
+            nonlocal upstream_closed
+            try:
+                yield make_delta_chunk("一")
+                yield make_delta_chunk("二")
+                yield make_usage_chunk(make_usage_obj())
+            finally:
+                upstream_closed = True
+
+        async def fake_create(**kwargs):
+            return fake_stream()
+
+        llm.async_client.chat.completions.create = fake_create
+
+        async with aclosing(llm.chat_stream([{"role": "user", "content": "hi"}])) as chunks:
+            async for _ in chunks:
+                break
+
+        assert upstream_closed
 
     async def test_error_before_stream_starts_raises_llm_error(self):
         llm = make_llm()

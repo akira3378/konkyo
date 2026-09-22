@@ -9,7 +9,8 @@
     "placeholder": "質問を入力（Enterで送信、Shift+Enterで改行）",
     "send": "送信",
     "stop": "停止",
-    "firstToken": "初回トークン {ms}ms"
+    "firstToken": "初回トークン {ms}ms",
+    "usage": "入力 {input}・出力 {output}・キャッシュ {rate}%"
   },
   "errors": {
     "network": "バックエンドに接続できません",

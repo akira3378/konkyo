@@ -9,7 +9,8 @@
     "placeholder": "输入问题，Enter 发送，Shift+Enter 换行",
     "send": "发送",
     "stop": "停止",
-    "firstToken": "首 token {ms}ms"
+    "firstToken": "首 token {ms}ms",
+    "usage": "输入 {input} · 输出 {output} · 缓存 {rate}%"
   },
   "errors": {
     "network": "连不上后端服务",

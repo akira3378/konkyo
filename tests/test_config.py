@@ -1,6 +1,16 @@
 import pytest
 
-from konkyo.config import ConfigError, cors_allow_origins
+from konkyo.config import ConfigError, LLMConfig, cors_allow_origins
+
+
+class TestLLMConfigPrimary:
+    @pytest.mark.parametrize("name", ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"])
+    def test_each_value_is_required(self, monkeypatch, name):
+        # 以前 base_url/model 有默认值（DeepSeek 官方），漏配时会悄悄连到
+        # 一个没实测过的 provider。现在三个都必须显式配置。
+        monkeypatch.delenv(name, raising=False)
+        with pytest.raises(ConfigError, match=name):
+            LLMConfig.primary()
 
 
 class TestCorsAllowOrigins:

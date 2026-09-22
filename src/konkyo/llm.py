@@ -162,22 +162,30 @@ class LLM:
 
         try:
             async for chunk in stream:
-                # 最后一条 chunk：choices 是空列表，usage 是这次调用的汇总。
-                # （标准 OpenAI 流式协议就是这样分两种 chunk，不是这家 provider 特有的）
+                # 先取正文，再看 usage，顺序不能反。
+                # 实测 Ark（2026-09-22）：最后一段正文和 usage 在同一个 chunk 里
+                # （content="んにちは！"、finish_reason=stop、usage 非空），之后还会
+                # 再发一个只有 usage、choices 为空的 chunk。以前先判断 usage 就 return，
+                # 每个回答的最后一段正文都被丢掉了——长回答只少结尾几个字不显眼，
+                # 短回答（"こんにちは！"只剩"こ"）才暴露出来。
+                if chunk.choices:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        yield StreamChunk(delta=delta)
                 if chunk.usage is not None:
-                    # 这家 provider 会把同一份 usage 在结尾重复发一次
-                    # （不同 provider 的实现细节，不是协议要求），收到就
-                    # 立刻结束，不然 usage 会被转发两次。
+                    # 第一次见到 usage 就结束：后面那个重复的 usage chunk 不再转发。
                     yield StreamChunk(usage=_parse_usage(chunk.usage))
                     return
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield StreamChunk(delta=delta)
         except APIError as e:
             # 流已经开始才出错——前面吐出去的文字保留，只是没法继续了。
             raise LLMError("stream_interrupted", str(e)) from e
+        finally:
+            # 调用方提前停止（用户点了停止、server.py 里 break）时，这个生成器会被
+            # aclose()，走到这里。显式关掉上游的 HTTP 响应，不依赖垃圾回收什么时候
+            # 顺手关——否则连接会一直挂着，上游也还在往这条连接里写。
+            # 注意：这只保证"我们这边关了连接"。provider 断开后是否立刻停止生成、
+            # 停止计费，是 provider 侧的行为，没有验证过（要对账单才知道）。
+            await stream.aclose()
 
 
 def _parse_usage(raw: Any) -> Usage:

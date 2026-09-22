@@ -6,9 +6,18 @@
       "runtimeExecutable": "/bin/bash",
       "runtimeArgs": [
         "-lc",
-        "cd /Users/akira/Documents/Projects/konkyo/web && exec npm run dev"
+        "cd web && exec npm run dev"
       ],
       "port": 3000
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": [
+        "-lc",
+        "exec uv run uvicorn konkyo.server:app --reload --port 8000"
+      ],
+      "port": 8000
     }
   ]
 }

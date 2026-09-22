@@ -5,21 +5,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/Composer";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { MessageBubble } from "@/components/MessageBubble";
-import { type ChatMessage, type ErrorCode, streamChat, SYSTEM_PROMPT } from "@/lib/chat";
+import {
+  type ErrorCode,
+  streamChat,
+  toRequestHistory,
+  type UIMessage,
+  type Usage,
+} from "@/lib/chat";
 
 export default function Home() {
   const t = useTranslations("chat");
   const tApp = useTranslations("app");
-  const tErrors = useTranslations("errors");
-  // messages 是整个对话历史，包含 system prompt。
+  // messages 是界面上显示的整个对话。
   // 这就是 S1 注释里说的"聊天记忆本质是程序在管理这个 list"——
   // 现在管理这个 list 的从终端循环换成了这个组件的 state。
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: "system", content: SYSTEM_PROMPT },
-  ]);
+  // 不含 system prompt：那由服务端加（src/konkyo/prompts.py）。
+  // 每次发送时用 toRequestHistory() 从这里挑出真正要发给后端的历史。
+  const [messages, setMessages] = useState<UIMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
-  const [usage, setUsage] = useState<string | null>(null);
+  const [usage, setUsage] = useState<Usage | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const streamStartRef = useRef(0);
@@ -43,11 +48,11 @@ export default function Home() {
 
   const handleSend = useCallback(
     (text: string) => {
-      const history: ChatMessage[] = [...messages, { role: "user", content: text }];
+      const withQuestion: UIMessage[] = [...messages, { role: "user", content: text }];
       // 先把用户消息 + 一个空的 assistant 占位一起放进 state。
       // 占位的 content 会在 onDelta 里被逐字追加——这就是打字机效果的来源：
       // 每次 delta 到达就触发一次 React 重渲染，不是等全部到齐才显示。
-      setMessages([...history, { role: "assistant", content: "" }]);
+      setMessages([...withQuestion, { role: "assistant", content: "" }]);
       setStreaming(true);
       setLatencyMs(null);
       setUsage(null);
@@ -57,7 +62,7 @@ export default function Home() {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      streamChat(history, controller.signal, {
+      streamChat(toRequestHistory(withQuestion), controller.signal, {
         onDelta: (delta) => {
           if (!gotFirstTokenRef.current) {
             gotFirstTokenRef.current = true;
@@ -68,18 +73,20 @@ export default function Home() {
         onUsage: (usage) => setUsage(usage),
         onDone: () => setStreaming(false),
         onError: (code: ErrorCode, detail) => {
-          // headline 永远是翻译过的（查 messages/*.json 的 errors 命名空间）；
-          // detail 是后端/浏览器原始报错文本，故意不翻译，只是附在括号里
-          // 给排查用——这条 detail 从头到尾没有经过任何拼好的中文/日文
-          // 文案，所以不存在"忘了翻译"的问题：它本来就不该被翻译。
-          const headline = code === "http" ? tErrors("http", { status: detail ?? "?" }) : tErrors(code);
-          const text = detail && code !== "http" ? `${headline}（${detail}）` : headline;
-          appendToLastAssistant(`\n\n[${text}]`);
+          // 以前这里把错误文案拼进 assistant 的 content，下一轮会被当成
+          // "模型说过的话"发回给模型。现在错误只挂在消息的 error 字段上：
+          // 界面照样显示（MessageBubble 负责翻译），但 toRequestHistory()
+          // 会把这一整轮从历史里去掉。
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = { ...next[next.length - 1], error: { code, detail } };
+            return next;
+          });
           setStreaming(false);
         },
       });
     },
-    [messages, appendToLastAssistant, tErrors],
+    [messages, appendToLastAssistant],
   );
 
   const handleStop = useCallback(() => {
@@ -99,8 +106,6 @@ export default function Home() {
     });
   }, []);
 
-  const visibleMessages = messages.filter((m) => m.role !== "system");
-
   return (
     <div className="mx-auto flex h-dvh w-full max-w-2xl flex-col">
       <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
@@ -110,22 +115,34 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
-            {latencyMs !== null && <span>{t("firstToken", { ms: latencyMs })}</span>}
-            {usage && <span className="hidden sm:inline">{usage}</span>}
+            {latencyMs !== null && (
+              <span className="whitespace-nowrap">{t("firstToken", { ms: latencyMs })}</span>
+            )}
+            {usage && (
+              <span className="hidden whitespace-nowrap sm:inline">
+                {t("usage", {
+                  input: usage.input_tokens,
+                  rate: usage.input_tokens
+                    ? Math.round((usage.cache_hit_tokens / usage.input_tokens) * 100)
+                    : 0,
+                  output: usage.output_tokens,
+                })}
+              </span>
+            )}
           </div>
           <LocaleSwitcher />
         </div>
       </header>
 
       <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
-        {visibleMessages.length === 0 && (
+        {messages.length === 0 && (
           <p className="mt-10 text-center text-sm text-zinc-400">{t("emptyHint")}</p>
         )}
-        {visibleMessages.map((m, i) => (
+        {messages.map((m, i) => (
           <MessageBubble
             key={i}
             message={m}
-            streaming={streaming && i === visibleMessages.length - 1 && m.role === "assistant"}
+            streaming={streaming && i === messages.length - 1 && m.role === "assistant"}
           />
         ))}
         <div ref={bottomRef} />

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type StreamCallbacks, streamChat } from "./chat";
+import { type StreamCallbacks, streamChat, toRequestHistory, type UIMessage } from "./chat";
 
 /** 拼一个假的 SSE 响应：把每个字符串片段当作一次独立的 fetch 读取结果，
  * 用来验证 chat.ts 自己写的"按 \n\n 切消息"逻辑——包括消息被硬切成
@@ -36,7 +36,7 @@ describe("streamChat", () => {
     const body = [
       'event: delta\ndata: {"delta":"你"}\n\n',
       'event: delta\ndata: {"delta":"好"}\n\n',
-      'event: usage\ndata: {"usage":"in=1 out=2"}\n\n',
+      'event: usage\ndata: {"input_tokens":1,"output_tokens":2,"cache_hit_tokens":0,"cache_miss_tokens":1}\n\n',
       "event: done\ndata: {}\n\n",
     ].join("");
     vi.stubGlobal(
@@ -49,7 +49,12 @@ describe("streamChat", () => {
 
     expect(callbacks.onDelta).toHaveBeenNthCalledWith(1, "你");
     expect(callbacks.onDelta).toHaveBeenNthCalledWith(2, "好");
-    expect(callbacks.onUsage).toHaveBeenCalledWith("in=1 out=2");
+    expect(callbacks.onUsage).toHaveBeenCalledWith({
+      input_tokens: 1,
+      output_tokens: 2,
+      cache_hit_tokens: 0,
+      cache_miss_tokens: 1,
+    });
     expect(callbacks.onDone).toHaveBeenCalledOnce();
     expect(callbacks.onError).not.toHaveBeenCalled();
   });
@@ -114,5 +119,49 @@ describe("streamChat", () => {
     await streamChat([], new AbortController().signal, callbacks);
 
     expect(callbacks.onError).toHaveBeenCalledWith("unknown", "x");
+  });
+});
+
+describe("toRequestHistory", () => {
+  it("出错的那一轮（问题 + 回答）整轮不发给后端，错误文案不会变成模型的历史", () => {
+    // 回归测试：以前错误文案被拼进 assistant 的 content，下一轮原样发给了模型。
+    const messages: UIMessage[] = [
+      { role: "user", content: "Q1" },
+      { role: "assistant", content: "A1" },
+      { role: "user", content: "Q2" },
+      { role: "assistant", content: "半截", error: { code: "stream_interrupted", detail: "x" } },
+      { role: "user", content: "Q3" },
+    ];
+
+    expect(toRequestHistory(messages)).toEqual([
+      { role: "user", content: "Q1" },
+      { role: "assistant", content: "A1" },
+      { role: "user", content: "Q3" },
+    ]);
+  });
+
+  it("用户主动停止留下的半截回答照常发（没有 error）", () => {
+    const messages: UIMessage[] = [
+      { role: "user", content: "Q1" },
+      { role: "assistant", content: "被停止的半截回答" },
+      { role: "user", content: "Q2" },
+    ];
+
+    expect(toRequestHistory(messages)).toEqual(messages);
+  });
+
+  it("空的 assistant 占位不发", () => {
+    const messages: UIMessage[] = [
+      { role: "user", content: "Q1" },
+      { role: "assistant", content: "" },
+    ];
+
+    expect(toRequestHistory(messages)).toEqual([{ role: "user", content: "Q1" }]);
+  });
+
+  it("发出去的每条只有 role 和 content，不带界面用的字段", () => {
+    const messages: UIMessage[] = [{ role: "user", content: "Q1" }];
+
+    expect(Object.keys(toRequestHistory(messages)[0]).sort()).toEqual(["content", "role"]);
   });
 });

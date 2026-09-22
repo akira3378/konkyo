@@ -9,7 +9,8 @@
     "placeholder": "Ask a question — Enter to send, Shift+Enter for a new line",
     "send": "Send",
     "stop": "Stop",
-    "firstToken": "First token {ms}ms"
+    "firstToken": "First token {ms}ms",
+    "usage": "in {input} · out {output} · cache {rate}%"
   },
   "errors": {
     "network": "Can't reach the backend",

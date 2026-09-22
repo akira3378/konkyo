@@ -31,8 +31,13 @@ def _require(name: str) -> str:
 class LLMConfig:
     """一个 LLM provider 的配置。
 
-    provider 可替换是有意的设计：base_url 和 model 都从环境变量来，
-    代码里不写死任何一家，方便替换/对比不同 provider。
+    base_url 和 model 都从环境变量来，代码里不写死任何一家。
+    但"能换"只是配置层面的：真正实测过的只有 Ark（见 .env.example），
+    换 provider 之后 llm.py 里的 extra_body 和 usage 解析要拿真实响应重新确认。
+
+    三个值都必填，不给默认值：以前默认指向 DeepSeek 官方 API，
+    而那条路径从没实测过——漏配时悄悄连到一个没验证过的 provider，
+    不如启动时直接报缺哪个。
     """
 
     base_url: str
@@ -42,25 +47,9 @@ class LLMConfig:
     @classmethod
     def primary(cls) -> "LLMConfig":
         return cls(
-            base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
+            base_url=_require("LLM_BASE_URL"),
             api_key=_require("LLM_API_KEY"),
-            model=os.getenv("LLM_MODEL", "deepseek-flash"),
-        )
-
-    @classmethod
-    def alternative(cls) -> "LLMConfig | None":
-        """第二个 provider。没配就返回 None。
-
-        用途：S6 之后拿同一套评测集在两个 provider 上跑，
-        证明"可替换"不是嘴上说说。
-        """
-        key = os.getenv("LLM_ALT_API_KEY", "").strip()
-        if not key:
-            return None
-        return cls(
-            base_url=os.getenv("LLM_ALT_BASE_URL", ""),
-            api_key=key,
-            model=os.getenv("LLM_ALT_MODEL", ""),
+            model=_require("LLM_MODEL"),
         )
 
 
